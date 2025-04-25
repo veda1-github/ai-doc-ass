@@ -1,73 +1,43 @@
+import os
+import time
+from transformers import BartTokenizer, BartForConditionalGeneration
 import streamlit as st
-from pathlib import Path
-import fitz  # PyMuPDF
 
-# Function to extract text from uploaded file
-def extract_text_from_file(uploaded_file):
-    file_extension = Path(uploaded_file.name).suffix.lower()
-    
-    if file_extension == ".pdf":
-        with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
-            text = ""
-            for page in doc:
-                text += page.get_text()
-            return text if text else "No text found in PDF."
-    
-    elif file_extension == ".docx":
-        from docx import Document
-        doc = Document(uploaded_file)
-        return "\n".join([para.text for para in doc.paragraphs])
-    
-    elif file_extension == ".pptx":
-        from pptx import Presentation
-        prs = Presentation(uploaded_file)
-        text = ""
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text += shape.text + "\n"
-        return text if text else "No text found in PPT."
-    
-    else:
-        return "Unsupported file format."
+# Load the BART model and tokenizer
+@st.cache_resource
+def load_model():
+    tokenizer = BartTokenizer.from_pretrained('facebook/bart-large-cnn')
+    model = BartForConditionalGeneration.from_pretrained('facebook/bart-large-cnn')
+    return tokenizer, model
 
-# Dummy data for query output
-dummy_results = [
-    {"title": "Document A", "summary": "This is a summary of Document A.", "related": ["Document C", "Document D"]},
-    {"title": "Document B", "summary": "This is a summary of Document B.", "related": ["Document A"]}
-]
+# Read documents
+def load_documents(folder_path="documents"):
+    docs = []
+    for filename in os.listdir(folder_path):
+        with open(os.path.join(folder_path, filename), 'r', encoding='utf-8') as file:
+            content = file.read()
+            docs.append((filename, content))
+    return docs
 
-# Streamlit App
-st.title("AI-Based Document Search Assistant")
+# Ask question using BART
+def ask_bart(query, documents):
+    tokenizer, model = load_model()
+    context = "\n\n".join([f"{name}:\n{content}" for name, content in documents])
+    full_input = f"question: {query} context: {context[:1024]}"  # Truncate context if too long
 
-# Upload files
-st.header("1. Upload Your Documents")
-uploaded_files = st.file_uploader("Upload PDF, Word, or PPT files", type=["pdf", "docx", "pptx"], accept_multiple_files=True)
+    inputs = tokenizer([full_input], max_length=1024, return_tensors='pt', truncation=True)
+    summary_ids = model.generate(inputs['input_ids'], num_beams=4, max_length=200, early_stopping=True)
+    output = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    return output
 
-if uploaded_files:
-    st.success(f"{len(uploaded_files)} file(s) uploaded successfully.")
-    for file in uploaded_files:
-        st.write(f"• {file.name}")
-        with st.expander(f"Preview: {file.name}"):
-            extracted_text = extract_text_from_file(file)
-            st.text_area("Extracted Text", extracted_text[:2000], height=200, key=file.name)
+# Streamlit UI
+st.title("📚 Smart Doc Assistant (BART Version)")
+query = st.text_input("Ask your question from the documents:")
 
-# Query input
-st.header("2. Enter Your Search Query")
-query = st.text_input("Type your question or query here")
-
-# Display results
 if query:
-    st.header("3. Search Results")
-    st.info(f"Showing results for: **{query}**")
-
-    for i, result in enumerate(dummy_results, 1):
-        st.subheader(f"{i}. {result['title']}")
-        st.write(f"**Summary:** {result['summary']}")
-        st.write("**Related Documents:**")
-        for rel in result["related"]:
-            st.write(f"- {rel}")
-
-# Footer
-st.markdown("---")
-st.caption("Prototype Interface | Team Project")
+    with st.spinner("Thinking..."):
+        documents = load_documents()
+        answer = ask_bart(query, documents)
+        if answer:
+            st.success("Answer:")
+            st.write(answer)
